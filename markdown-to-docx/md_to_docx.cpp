@@ -154,6 +154,99 @@ bool has_markdown_extension(const fs::path& path) {
     return extension == ".md";
 }
 
+std::vector<fs::path> path_entries(const char* value) {
+    std::vector<fs::path> entries;
+    if (value == nullptr) {
+        return entries;
+    }
+
+    const std::string path_list = value;
+    std::size_t start = 0;
+    while (start <= path_list.size()) {
+        const std::size_t end = path_list.find(kPathListSeparator, start);
+        std::string entry = path_list.substr(start, end - start);
+
+        if (entry.size() >= 2 && entry.front() == '"' && entry.back() == '"') {
+            entry = entry.substr(1, entry.size() - 2);
+        }
+        entries.emplace_back(entry.empty() ? "." : entry);
+
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return entries;
+}
+
+bool is_executable_file(const fs::path& path) {
+#ifdef _WIN32
+    std::error_code error;
+    return fs::is_regular_file(path, error) && !error;
+#else
+    std::error_code error;
+    return fs::is_regular_file(path, error) && !error &&
+           access(path.c_str(), X_OK) == 0;
+#endif
+}
+
+bool command_is_available(const std::string& command) {
+    const fs::path command_path = command;
+    if (command_path.has_parent_path()) {
+        return is_executable_file(command_path);
+    }
+
+#ifdef _WIN32
+    std::vector<std::string> extensions;
+    if (command_path.has_extension()) {
+        extensions.emplace_back();
+    } else {
+        const char* path_extensions = std::getenv("PATHEXT");
+        const std::string extension_list =
+            path_extensions == nullptr || *path_extensions == '\0'
+                ? ".COM;.EXE;.BAT;.CMD"
+                : path_extensions;
+        std::size_t start = 0;
+        while (start <= extension_list.size()) {
+            const std::size_t end = extension_list.find(';', start);
+            extensions.push_back(extension_list.substr(start, end - start));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+#endif
+
+    for (const fs::path& directory : path_entries(std::getenv("PATH"))) {
+#ifdef _WIN32
+        for (const std::string& extension : extensions) {
+            if (is_executable_file(directory / (command + extension))) {
+                return true;
+            }
+        }
+#else
+        if (is_executable_file(directory / command)) {
+            return true;
+        }
+#endif
+    }
+
+    return false;
+}
+
+void check_runtime_dependencies() {
+    if (!command_is_available("pandoc")) {
+        throw std::runtime_error(
+            "Pandoc is not installed or is not available through PATH");
+    }
+    if (!command_is_available("mermaid-filter")) {
+        throw std::runtime_error(
+            "mermaid-filter is not installed or is not available through PATH");
+    }
+}
+
 std::vector<fs::path> find_markdown_files(const fs::path& input,
                                           const fs::path& output) {
     std::vector<fs::path> files;
@@ -369,6 +462,8 @@ int main(int argc, char* argv[]) {
             std::cout << "No .md files found below " << input << '\n';
             return 0;
         }
+
+        check_runtime_dependencies();
 
         fs::create_directories(output);
         std::cout << "Converting " << sources.size() << " Markdown file"
