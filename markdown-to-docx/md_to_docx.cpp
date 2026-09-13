@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -10,15 +11,26 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
 
 namespace {
+
+#ifdef _WIN32
+constexpr char kPathListSeparator = ';';
+#else
+constexpr char kPathListSeparator = ':';
+#endif
 
 struct Options {
     std::optional<fs::path> input;
@@ -29,18 +41,29 @@ struct Options {
 class TemporaryDirectory {
   public:
     TemporaryDirectory() {
-        std::string pattern =
-            (fs::temp_directory_path() / "md-to-docx.XXXXXX").string();
-        std::vector<char> writable_pattern(pattern.begin(), pattern.end());
-        writable_pattern.push_back('\0');
+        const auto timestamp =
+            std::chrono::steady_clock::now().time_since_epoch().count();
 
-        char* created = mkdtemp(writable_pattern.data());
-        if (created == nullptr) {
-            throw std::runtime_error(
-                std::string("Could not create a temporary folder: ") +
-                std::strerror(errno));
+        for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+            const fs::path candidate =
+                fs::temp_directory_path() /
+                ("md-to-docx." + std::to_string(timestamp) + "." +
+                 std::to_string(attempt));
+
+            std::error_code error;
+            if (fs::create_directory(candidate, error)) {
+                path_ = candidate;
+                return;
+            }
+
+            if (error && error != std::errc::file_exists) {
+                throw fs::filesystem_error(
+                    "Could not create a temporary folder", candidate, error);
+            }
         }
-        path_ = created;
+
+        throw std::runtime_error(
+            "Could not find an unused temporary folder name");
     }
 
     TemporaryDirectory(const TemporaryDirectory&) = delete;
@@ -158,6 +181,35 @@ std::vector<fs::path> find_markdown_files(const fs::path& input,
 
 int run_process(std::vector<std::string> arguments,
                 const fs::path& working_directory) {
+#ifdef _WIN32
+    std::vector<const char*> raw_arguments;
+    raw_arguments.reserve(arguments.size() + 1);
+
+    for (const std::string& argument : arguments) {
+        raw_arguments.push_back(argument.c_str());
+    }
+    raw_arguments.push_back(nullptr);
+
+    const fs::path original_directory = fs::current_path();
+    fs::current_path(working_directory);
+    const intptr_t result =
+        _spawnvp(_P_WAIT, raw_arguments[0], raw_arguments.data());
+    const int process_error = errno;
+
+    std::error_code restore_error;
+    fs::current_path(original_directory, restore_error);
+    if (restore_error) {
+        throw fs::filesystem_error("Could not restore the working directory",
+                                   original_directory, restore_error);
+    }
+
+    if (result == -1) {
+        throw std::runtime_error(std::string("Could not start Pandoc: ") +
+                                 std::strerror(process_error));
+    }
+
+    return static_cast<int>(result);
+#else
     std::vector<char*> raw_arguments;
     raw_arguments.reserve(arguments.size() + 1);
 
@@ -203,6 +255,7 @@ int run_process(std::vector<std::string> arguments,
         std::cerr << "Pandoc stopped after signal " << WTERMSIG(status) << '\n';
     }
     return 1;
+#endif
 }
 
 void print_mermaid_error_log(const fs::path& working_directory) {
@@ -249,7 +302,7 @@ int convert_files(const fs::path& input, const fs::path& output,
                   << fs::relative(target, output).generic_string() << '\n';
 
         const std::string resource_path =
-            source.parent_path().string() + ":" + input.string();
+            source.parent_path().string() + kPathListSeparator + input.string();
         const int result = run_process({
             "pandoc",
             source.string(),

@@ -1,0 +1,56 @@
+name: Build markdown-to-docx
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - markdown-to-docx/md_to_docx.cpp
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Compile
+        run: |
+          mkdir -p dist
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            markdown-to-docx/md_to_docx.cpp \
+            -o dist/markdown-to-docx-linux-x86_64
+          ./dist/markdown-to-docx-linux-x86_64 -h
+          tar -C dist -czf dist/markdown-to-docx-linux-x86_64.tar.gz \
+            markdown-to-docx-linux-x86_64
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/markdown-to-docx-linux-x86_64.tar.gz
+          archive: false
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Compile
+        shell: cmd
+        run: |
+          if not exist dist mkdir dist
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /std:c++17 /EHsc /O2 /W4 /permissive- /MT markdown-to-docx\md_to_docx.cpp /Fe:dist\markdown-to-docx-windows-x86_64.exe
+          dist\markdown-to-docx-windows-x86_64.exe -h
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/markdown-to-docx-windows-x86_64.exe
+          archive: false
