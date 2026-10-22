@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "assi_types.hpp"
-#include "assi_contoller.hpp"
+#include "assi_controller.hpp"
 
 TEST(ASSITest, OffShowsNone)  // Parameters - Test group, Test name
 {
